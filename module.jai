@@ -6,6 +6,7 @@ Networked_Periodic_Signal_Quantizer :: struct(T: Type) {
     received_server_states: [..] T;
     
     output_signal: Periodic_Signal;
+    output_signal_monitor : Periodic_Timer;
     
     pushed_first_element: bool;
     
@@ -56,6 +57,8 @@ per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer) -> npsq.T
     }
     
     if ready(*output_signal) {
+        mark_cycle(*output_signal_monitor);
+        // log("npsq emitting at: %", get_average_delta_time(*output_signal_monitor));
         total_emit_opportunities += 1;
         
         if repopulate_state_buffer {
@@ -114,7 +117,7 @@ Networked_Interpolator :: struct(T: Type) {
     npsq: Networked_Periodic_Signal_Quantizer(T);
     
     interpolate_func: Interpolation_Func;
-    
+
     active_start_state: T;
     active_end_state: T;
     active_t: float64;
@@ -173,7 +176,7 @@ per_frame_update :: (using ni: *Networked_Interpolator($T)) {
     new_state, just_emitted, has_value := per_frame_update(*npsq);
 
     if (just_emitted) {
-        // log("npsq size: %", npsq.received_server_states.count);
+        // log("npsq size: % has value: %", npsq.received_server_states.count, has_value);
         if has_value {
             // log("npsq emitted value");
             if !has_active_start_state {
@@ -191,7 +194,7 @@ per_frame_update :: (using ni: *Networked_Interpolator($T)) {
             active_end_state = new_state;
 
         } else {
-            // log("npsq emitted empty");
+             // log("npsq emitted empty");
             // no new state available - create "constant interpolation window"
             // to avoid repeating the same interpolation, instead keeps state in place.
 
