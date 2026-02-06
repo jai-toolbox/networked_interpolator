@@ -122,11 +122,13 @@ Networked_Interpolator :: struct(T: Type) {
     active_end_state: T;
     active_t: float64;
     current_interpolated_state: T;
-    
+
     has_active_start_state: bool;
     has_active_end_state: bool;
     has_current_interpolated_state: bool;
+
     first_interpolation_window_has_been_initialized: bool;
+    updated_interpolation_window_on_last_per_frame_update := false;
 }
 
 init :: (ni: *Networked_Interpolator($T), interpolate_func: Networked_Interpolator(T).Interpolation_Func, receive_frequency: float) {
@@ -170,6 +172,8 @@ per_frame_update :: (using ni: *Networked_Interpolator($T)) {
     // log("nipfu start");
     // defer log("nipfu end");
 
+    updated_interpolation_window_on_last_per_frame_update = false;
+
     // internally calls ready on the output_signal (1)
     // doing this is wrong, we need to know when it emits something
     // rather than just doing the per frame update all the time.
@@ -192,6 +196,7 @@ per_frame_update :: (using ni: *Networked_Interpolator($T)) {
             
             active_start_state = active_end_state;
             active_end_state = new_state;
+            updated_interpolation_window_on_last_per_frame_update = true;
 
         } else {
              // log("npsq emitted empty");
