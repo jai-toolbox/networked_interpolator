@@ -120,7 +120,7 @@ Networked_Interpolator :: struct(T: Type) {
 
     active_start_state: T;
     active_end_state: T;
-    active_t: float64;
+    active_t: float;
     current_interpolated_state: T;
 
     has_active_start_state: bool;
