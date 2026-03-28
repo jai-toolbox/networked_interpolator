@@ -60,7 +60,7 @@ push :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR), item: T
     }
 
     #if MONITOR {
-        push(*removal_count_history, cast(float) removals);
+        carray_add(*removal_count_history, cast(float) removals);
     }
     
     if !pushed_first_element {
@@ -81,7 +81,7 @@ per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONIT
         total_emit_opportunities += 1;
         
         #if MONITOR {
-            push(*buffer_occupancy_history, cast(float) received_server_states.count);
+            carray_add(*buffer_occupancy_history, cast(float) received_server_states.count);
         }
 
         if repopulate_state_buffer {
@@ -91,8 +91,8 @@ per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONIT
             missed_emit_opportunities += 1;
 
             #if MONITOR {
-                push(*mode_history, 0.0);
-                push(*emit_result_history, 0.0);
+                carray_add(*mode_history, 0.0);
+                carray_add(*emit_result_history, 0.0);
             }
 
             return .{}, true, false;
@@ -101,8 +101,8 @@ per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONIT
                 repopulate_state_buffer = true;
 
                 #if MONITOR {
-                    push(*mode_history, 0.0);
-                    push(*emit_result_history, 0.0);
+                    carray_add(*mode_history, 0.0);
+                    carray_add(*emit_result_history, 0.0);
                 }
 
                 return .{}, true, false;
@@ -113,8 +113,8 @@ per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONIT
             array_ordered_remove_by_index(*received_server_states, 0);
 
             #if MONITOR {
-                push(*mode_history, 1.0);
-                push(*emit_result_history, 1.0);
+                carray_add(*mode_history, 1.0);
+                carray_add(*emit_result_history, 1.0);
             }
             
             return result, true, true;
