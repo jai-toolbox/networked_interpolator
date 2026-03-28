@@ -1,8 +1,9 @@
 #import "Basic";
 
 #import "tbx/time";
+#import "tbx/circular_array";
 
-Networked_Periodic_Signal_Quantizer :: struct(T: Type) {
+Networked_Periodic_Signal_Quantizer :: struct(T: Type, MONITOR: bool = false) {
     received_server_states: [..] T;
     
     output_signal: Periodic_Signal;
@@ -18,25 +19,48 @@ Networked_Periodic_Signal_Quantizer :: struct(T: Type) {
     repopulate_state_buffer: bool = true;
     total_emit_opportunities: u64;
     missed_emit_opportunities: u64;
+
+    #if MONITOR {
+        MONITOR_HISTORY :: 256;
+        
+        // recorded every emit opportunity: how many items are in the buffer
+        buffer_occupancy_history: Circular_Array(float, MONITOR_HISTORY);
+        
+        // recorded every emit opportunity: 1.0 = normal mode, 0.0 = repopulate mode
+        mode_history: Circular_Array(float, MONITOR_HISTORY);
+        
+        // recorded every emit opportunity: 1.0 = emitted with value, 0.0 = emitted without value
+        emit_result_history: Circular_Array(float, MONITOR_HISTORY);
+        
+        // recorded every push: how many items were removed due to max_num_states overflow
+        removal_count_history: Circular_Array(float, MONITOR_HISTORY);
+    }
 }
 
-init :: (npsq: *Networked_Periodic_Signal_Quantizer($T), target_num_states: u32, max_num_states: u32, frequency_hz: float) {
+init :: (npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR), target_num_states: u32, max_num_states: u32, frequency_hz: float) {
     npsq.target_num_states = target_num_states;
     npsq.max_num_states = max_num_states;
     npsq.output_signal.frequency_hz = frequency_hz;
 }
 
-create :: ($T: Type, target_num_states: u32, max_num_states: u32, frequency_hz: float) -> Networked_Periodic_Signal_Quantizer(T) {
-    npsq: Networked_Periodic_Signal_Quantizer(T);
+create :: ($T: Type, $MONITOR: bool = false, target_num_states: u32, max_num_states: u32, frequency_hz: float) -> Networked_Periodic_Signal_Quantizer(T, MONITOR) {
+    npsq: Networked_Periodic_Signal_Quantizer(T, MONITOR);
     init(*npsq, target_num_states, max_num_states, frequency_hz);
     return npsq;
 }
 
-push :: (using npsq: *Networked_Periodic_Signal_Quantizer, item: npsq.T) {
+// rename to npsq add later.
+push :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR), item: T) {
     array_add(*received_server_states, item);
     
+    removals := 0;
     while received_server_states.count > max_num_states {
         array_ordered_remove_by_index(*received_server_states, 0);
+        removals += 1;
+    }
+
+    #if MONITOR {
+        push(*removal_count_history, cast(float) removals);
     }
     
     if !pushed_first_element {
@@ -45,12 +69,8 @@ push :: (using npsq: *Networked_Periodic_Signal_Quantizer, item: npsq.T) {
     }
 }
 
-
 // returns the next state if it's time to emit and one is available, success=false otherwise.
-per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer) -> npsq.T, just_emitted: bool, has_value: bool {
-    // log("npsqpfu start");
-    // defer log("npsqpfu end");
-
+per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR)) -> T, just_emitted: bool, has_value: bool {
 
     if !pushed_first_element {
         return .{}, false, false;
@@ -58,34 +78,48 @@ per_frame_update :: (using npsq: *Networked_Periodic_Signal_Quantizer) -> npsq.T
     
     if ready(*output_signal) {
         mark_cycle(*output_signal_monitor);
-        // log("npsq emitting at: %", get_average_delta_time(*output_signal_monitor));
         total_emit_opportunities += 1;
         
+        #if MONITOR {
+            push(*buffer_occupancy_history, cast(float) received_server_states.count);
+        }
+
         if repopulate_state_buffer {
             if received_server_states.count >= target_num_states {
                 repopulate_state_buffer = false;
             }
             missed_emit_opportunities += 1;
+
+            #if MONITOR {
+                push(*mode_history, 0.0);
+                push(*emit_result_history, 0.0);
+            }
+
             return .{}, true, false;
         } else {
             if received_server_states.count == 0 {
                 repopulate_state_buffer = true;
+
+                #if MONITOR {
+                    push(*mode_history, 0.0);
+                    push(*emit_result_history, 0.0);
+                }
+
                 return .{}, true, false;
             }
             
             // copy first element, then remove from front
             result := received_server_states[0];
             array_ordered_remove_by_index(*received_server_states, 0);
-            
-            // I think this is wrong... is it? gotta think about it
-            // i think it's wrong because if you hit zero that's ok, its when
-            // you need something and there's nothing when its bad.
-            // repopulate_state_buffer = received_server_states.count == 0;
+
+            #if MONITOR {
+                push(*mode_history, 1.0);
+                push(*emit_result_history, 1.0);
+            }
             
             return result, true, true;
         }
     }
-
     
     return .{}, false, false;
 }
@@ -114,7 +148,7 @@ Networked_Interpolator :: struct(T: Type) {
     // this is a pointer to a constant because functions are constant.
     Interpolation_Func :: #type (start: T, end: T, t: float) -> T;
     
-    npsq: Networked_Periodic_Signal_Quantizer(T);
+    npsq: Networked_Periodic_Signal_Quantizer(T, true);
     
     interpolate_func: Interpolation_Func;
 
