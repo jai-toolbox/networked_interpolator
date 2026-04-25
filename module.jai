@@ -4,6 +4,11 @@
 #import "tbx/circular_array";
 
 Networked_Periodic_Signal_Quantizer :: struct(T: Type, MONITOR: bool = false) {
+
+    Deinit_Func :: #type (item: *T);
+
+    deinit_item: Deinit_Func;  // null means no cleanup needed
+
     received_server_states: [..] T;
     
     output_signal: Periodic_Signal;
@@ -37,36 +42,43 @@ Networked_Periodic_Signal_Quantizer :: struct(T: Type, MONITOR: bool = false) {
     }
 }
 
-init :: (npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR), target_num_states: u32, max_num_states: u32, frequency_hz: float) {
+init :: (npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR), target_num_states: u32, max_num_states: u32, frequency_hz: float, deinit_item: Networked_Periodic_Signal_Quantizer(T, MONITOR).Deinit_Func = null) {
     npsq.target_num_states = target_num_states;
     npsq.max_num_states = max_num_states;
     npsq.output_signal.frequency_hz = frequency_hz;
+    npsq.deinit_item = deinit_item;
 }
 
-create :: ($T: Type, $MONITOR: bool = false, target_num_states: u32, max_num_states: u32, frequency_hz: float) -> Networked_Periodic_Signal_Quantizer(T, MONITOR) {
-    npsq: Networked_Periodic_Signal_Quantizer(T, MONITOR);
-    init(*npsq, target_num_states, max_num_states, frequency_hz);
-    return npsq;
+
+create :: ($T: Type, interpolate_func: Networked_Interpolator(T).Interpolation_Func, deinit_func: Networked_Periodic_Signal_Quantizer(T, true).Deinit_Func, receive_frequency: float) -> Networked_Interpolator(T) {
+    ni: Networked_Interpolator(T);
+    init(*ni, interpolate_func, deinit_func, receive_frequency);  
+    return ni;
 }
 
-// rename to npsq add later.
 push :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR), item: T) {
     array_add(*received_server_states, item);
-    
-    removals := 0;
-    while received_server_states.count > max_num_states {
-        array_ordered_remove_by_index(*received_server_states, 0);
-        removals += 1;
-    }
 
-    #if MONITOR {
-        carray_add(*removal_count_history, cast(float) removals);
-    }
-    
+    // no overflow handling here, the caller is responsible for drain_overflow
+
     if !pushed_first_element {
         pushed_first_element = true;
         output_signal.last_time = current_time_monotonic();
     }
+}
+
+drain_overflow :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR)) -> [..] T {
+    removed: [..] T;
+    while received_server_states.count >= max_num_states && received_server_states.count > 0 {
+        array_add(*removed, received_server_states[0]);
+        array_ordered_remove_by_index(*received_server_states, 0);
+    }
+
+    #if MONITOR {
+        if removed.count > 0  carray_add(*removal_count_history, cast(float) removed.count);
+    }
+
+    return removed;
 }
 
 // returns the next state if it's time to emit and one is available, success=false otherwise.
@@ -131,7 +143,12 @@ get_missed_emit_percentage :: (using npsq: Networked_Periodic_Signal_Quantizer) 
     return cast(float64) missed_emit_opportunities * 100.0 / cast(float64) total_emit_opportunities;
 }
 
-deinit :: (using npsq: *Networked_Periodic_Signal_Quantizer) {
+maybe_deinit_item :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR), item: *T) {
+    if deinit_item  deinit_item(item);
+}
+
+deinit :: (using npsq: *Networked_Periodic_Signal_Quantizer($T, $MONITOR)) {
+    for *received_server_states  maybe_deinit_item(npsq, it);
     array_free(received_server_states);
 }
 
@@ -165,11 +182,10 @@ Networked_Interpolator :: struct(T: Type) {
     updated_interpolation_window_on_last_per_frame_update := false;
 }
 
-init :: (ni: *Networked_Interpolator($T), interpolate_func: Networked_Interpolator(T).Interpolation_Func, receive_frequency: float) {
+init :: (ni: *Networked_Interpolator($T), interpolate_func: Networked_Interpolator(T).Interpolation_Func, deinit_func: Networked_Periodic_Signal_Quantizer(T, true).Deinit_Func, receive_frequency: float) {
     ni.interpolate_func = interpolate_func;
-    init(*ni.npsq, 2, 3, receive_frequency);
+    init(*ni.npsq, 2, 3, receive_frequency, deinit_func);
     
-    // reset other fields to defaults (in case we're re-initializing)
     ni.active_start_state = T.{};
     ni.active_end_state = T.{};
     ni.active_t = 0;
@@ -180,9 +196,17 @@ init :: (ni: *Networked_Interpolator($T), interpolate_func: Networked_Interpolat
     ni.first_interpolation_window_has_been_initialized = false;
 }
 
-create :: ($T: Type, interpolate_func: Networked_Interpolator(T).Interpolation_Func, receive_frequency: float) -> Networked_Interpolator(T) {
+deinit :: (networked_interpolator: *Networked_Interpolator($T)) {
+    npsq := *networked_interpolator.npsq;
+    if networked_interpolator.has_active_start_state    maybe_deinit_item(npsq, *networked_interpolator.active_start_state);
+    if networked_interpolator.has_active_end_state      maybe_deinit_item(npsq, *networked_interpolator.active_end_state);
+    if networked_interpolator.has_current_interpolated_state  maybe_deinit_item(npsq, *networked_interpolator.current_interpolated_state);
+    deinit(npsq);
+}
+
+create :: ($T: Type, interpolate_func: Networked_Interpolator(T).Interpolation_Func, deinit_func: Networked_Periodic_Signal_Quantizer(T, true).Deinit_Func, receive_frequency: float) -> Networked_Interpolator(T) {
     ni: Networked_Interpolator(T);
-    init(*ni, interpolate_func, receive_frequency);
+    init(*ni, interpolate_func, receive_frequency, deinit_func);
     return ni;
 }
 
@@ -203,20 +227,12 @@ get_interpolation_window :: (using ni: *Networked_Interpolator($T)) -> Networked
 }
 
 per_frame_update :: (using ni: *Networked_Interpolator($T)) {
-    // log("nipfu start");
-    // defer log("nipfu end");
-
     updated_interpolation_window_on_last_per_frame_update = false;
 
-    // internally calls ready on the output_signal (1)
-    // doing this is wrong, we need to know when it emits something
-    // rather than just doing the per frame update all the time.
     new_state, just_emitted, has_value := per_frame_update(*npsq);
 
     if (just_emitted) {
-        // log("npsq size: % has value: %", npsq.received_server_states.count, has_value);
         if has_value {
-            // log("npsq emitted value");
             if !has_active_start_state {
                 active_start_state = new_state;
                 has_active_start_state = true;
@@ -228,38 +244,34 @@ per_frame_update :: (using ni: *Networked_Interpolator($T)) {
                 return;
             }
             
+            maybe_deinit_item(*npsq, *active_start_state);
             active_start_state = active_end_state;
             active_end_state = new_state;
             updated_interpolation_window_on_last_per_frame_update = true;
 
         } else {
-             // log("npsq emitted empty");
-            // no new state available - create "constant interpolation window"
-            // to avoid repeating the same interpolation, instead keeps state in place.
-
             if has_active_end_state {
+                maybe_deinit_item(*npsq, *active_start_state);
                 active_start_state = active_end_state;
+                active_end_state = T.{};
+                has_active_end_state = false;
+                first_interpolation_window_has_been_initialized = false;
             }
         }
-    } else {
-        // log("wasn't time to emit");
     }
 
-    
     if !first_interpolation_window_has_been_initialized {
         return;
     }
     
-    // makes sense that we use this because of (1)
     active_t = npsq.output_signal.cycle_progress_at_last_ready_call;
-
-    // if you just emitted then active t should be zero, the cycle progress at the last ready call
-    // will still be 1, because that's what it was at the last ready call, but because we're
-    // starting a new interpolation frame we need to force that to be 0
     if (just_emitted && active_t == 1) {
         active_t = 0;
     }
     
+    if has_current_interpolated_state {
+        maybe_deinit_item(*npsq, *current_interpolated_state);
+    }
     current_interpolated_state = interpolate_func(active_start_state, active_end_state, cast(float) active_t);
     has_current_interpolated_state = true;
 }
